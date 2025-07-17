@@ -17,15 +17,15 @@ let firebaseApp: FirebaseApp | null = null;
 let database: Database | null = null;
 let partyRef: any;
 
-// Hardcoded Firebase configuration to resolve initialization issues in the dev environment.
+// Firebase configuration is read from environment variables
 const firebaseConfig = {
-  apiKey: "AIzaSyAhPT93VYqRHuuQMyOsuB2awR8qZQstimY",
-  authDomain: "cinesync-uesa3.firebaseapp.com",
-  databaseURL: "https://cinesync-uesa3.firebaseio.com",
-  projectId: "cinesync-uesa3",
-  storageBucket: "cinesync-uesa3.appspot.com",
-  messagingSenderId: "942496756118",
-  appId: "1:942496756118:web:b008a67be9e0d023de6db7"
+  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL,
+  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID
 };
 
 // Only initialize Firebase if the necessary config is provided
@@ -40,7 +40,7 @@ if (firebaseConfig.projectId && firebaseConfig.databaseURL) {
         database = getDatabase(firebaseApp);
     }
 } else {
-    console.warn("Firebase config is missing. Real-time sync features will be disabled.");
+    console.warn("Firebase config is missing. Real-time sync features will be disabled. Please update your environment variables.");
 }
 
 
