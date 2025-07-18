@@ -1,6 +1,6 @@
 
 import { initializeApp, getApp, type FirebaseApp } from 'firebase/app';
-import { getDatabase, ref, onValue, set, type Database } from 'firebase/database';
+import { getDatabase, ref, onValue, set, type Database, get } from 'firebase/database';
 
 export interface PlayerState {
     isPlaying: boolean;
@@ -73,4 +73,23 @@ export const onStateChange = (callback: (state: PlayerState) => void) => {
   });
 
   return unsubscribe;
+};
+
+export const scheduleParty = async (partyId: string, movieTitle: string, scheduledTime: string) => {
+  if (!database) {
+    console.error("Firebase database not initialized.");
+    return;
+  }
+  const scheduledPartyRef = ref(database, `scheduledParties/${partyId}`);
+  await set(scheduledPartyRef, { partyId, movieTitle, scheduledTime });
+};
+
+export const getScheduledParty = async (partyId: string) => {
+  if (!database) {
+    console.error("Firebase database not initialized.");
+    return null;
+  }
+  const scheduledPartyRef = ref(database, `scheduledParties/${partyId}`);
+  const snapshot = await get(scheduledPartyRef);
+  return snapshot.exists() ? snapshot.val() : null;
 };
