@@ -265,7 +265,12 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
   };
   
   const handleInvite = () => {
-    navigator.clipboard.writeText(window.location.href);
+    const currentUrl = new URL(window.location.href);
+    if (playerState.videoTitle && playerState.videoTitle !== 'Movie Title') {
+      currentUrl.searchParams.set('movieTitle', playerState.videoTitle);
+    }
+    
+    navigator.clipboard.writeText(currentUrl.toString());
     toast({
         title: 'Invite Link Copied!',
         description: 'The link to this watch party has been copied to your clipboard.',
