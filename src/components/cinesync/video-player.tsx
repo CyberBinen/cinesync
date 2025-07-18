@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/tooltip';
 import { useToast } from '@/hooks/use-toast';
 import { getDiscussionStarters } from '@/app/actions';
-import { initializeSync, syncState, onStateChange, type PlayerState } from '@/lib/firebase-sync';
+import { initializeSync, syncState, onStateChange, type PlayerState, firebaseDatabase } from '@/lib/firebase-sync'; // Import firebaseDatabase
 
 function formatTime(seconds: number) {
     if (isNaN(seconds)) return '00:00';
@@ -74,6 +74,9 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const playerContainerRef = useRef<HTMLDivElement>(null);
   const lastSyncTime = useRef(0);
+  const peerConnection = useRef<RTCPeerConnection | null>(null); // State for RTCPeerConnection
+  const userId = useRef<string>(`user-${Math.random().toString(36).substring(7)}`); // Generate a simple unique user ID
+  const isNegotiating = useRef(false); // To prevent multiple negotiation attempts
 
   const handleDiscussionStart = useCallback(async (title: string) => {
     const result = await getDiscussionStarters({ movieTitle: title });
@@ -90,6 +93,49 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
   }, [toast]);
 
   useEffect(() => {
+    // Initialize RTCPeerConnection on component mount
+    peerConnection.current = new RTCPeerConnection();
+    console.log('RTCPeerConnection initialized for user:', userId.current);
+      peerConnection.current.onicecandidate = (event) => {
+      if (!partyId || !userId.current) return;
+      // Send ICE candidate to other peers via Firebase
+      firebaseDatabase.ref(`/parties/${partyId}/signaling/${userId.current}/iceCandidates`).push(event.candidate);
+      if (event.candidate) {
+        console.log('ICE candidate found:', event.candidate);
+      }
+    };
+
+    peerConnection.current.ontrack = (event) => {
+      console.log('Track received:', event.streams[0]);
+      // Attach received stream to video element for participants
+      if (videoRef.current) {
+        videoRef.current.srcObject = event.streams[0];
+        videoRef.current.play();
+      }
+    };
+
+    // Handle negotiation needed event
+    peerConnection.current.onnegotiationneeded = async () => {
+      if (IS_HOST && peerConnection.current && !isNegotiating.current) {
+        isNegotiating.current = true;
+        try {
+          console.log('Negotiation needed: Creating offer');
+          const offer = await peerConnection.current.createOffer();
+          await peerConnection.current.setLocalDescription(offer);
+          // Send the offer to Firebase
+          if (partyId && userId.current) {
+            await firebaseDatabase.ref(`/parties/${partyId}/signaling/${userId.current}/offer`).set(offer);
+            console.log('Created and sent offer');
+          }
+        } catch (error) {
+          console.error('Error creating or sending offer:', error);
+        } finally {
+          isNegotiating.current = false;
+        }
+      }
+    };
+
+
     if (movieTitle) {
       updateState({ videoTitle: movieTitle });
     }
@@ -100,6 +146,56 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
     if (!partyId) return;
 
     initializeSync(partyId);
+
+    const signalingRef = firebaseDatabase.ref(`/parties/${partyId}/signaling`);
+
+    // Listen for signaling messages for this user
+    const userSignalingRef = signalingRef.child(userId.current);
+
+    // Listen for offers
+    userSignalingRef.child('offer').on('value', async (snapshot) => {
+      const offer = snapshot.val();
+      if (offer && peerConnection.current && !IS_HOST && peerConnection.current.signalingState !== 'have-local-offer') {
+        console.log('Received offer:', offer);
+        try {
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(offer));
+          const answer = await peerConnection.current.createAnswer();
+          await peerConnection.current.setLocalDescription(answer);
+          // Send the answer back to the host
+          await signalingRef.child(offer.fromUserId).child('answer').set({ answer, fromUserId: userId.current });
+          console.log('Created and sent answer');
+        } catch (error) {
+          console.error('Error processing offer:', error);
+        }
+      }
+    });
+
+    // Listen for answers
+    userSignalingRef.child('answer').on('value', async (snapshot) => {
+      const answer = snapshot.val();
+      if (answer && peerConnection.current && IS_HOST && peerConnection.current.signalingState !== 'stable') {
+        console.log('Received answer:', answer);
+        try {
+          await peerConnection.current.setRemoteDescription(new RTCSessionDescription(answer.answer));
+          console.log('Set remote description from answer');
+        } catch (error) {
+          console.error('Error processing answer:', error);
+        }
+      }
+    });
+
+    // Listen for ICE candidates from other peers
+    userSignalingRef.child('iceCandidates').on('child_added', async (snapshot) => {
+        const candidate = snapshot.val();
+        if (candidate && peerConnection.current && peerConnection.current.remoteDescription) { // Ensure remote description is set
+            try {
+                await peerConnection.current.addIceCandidate(new RTCIceCandidate(candidate));
+                 console.log('Added ICE candidate:', candidate);
+            } catch (error) {
+                console.error('Error adding ICE candidate:', error);
+            }
+        }
+    });
 
     const cleanup = onStateChange((newState) => {
       setPlayerState(prevState => {
@@ -125,7 +221,14 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
     });
 
     return cleanup;
-  }, [partyId]);
+  }, [partyId, movieTitle]); // Added movieTitle dependency as it's used in updateState
+
+ useEffect(() => {
+    return () => {
+      // Close RTCPeerConnection on component unmount
+      if (peerConnection.current) peerConnection.current.close();
+    };
+ }, []);
 
   useEffect(() => {
     const handleNewReaction = (event: Event) => {
@@ -208,6 +311,18 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
       stopCurrentStream();
       const url = URL.createObjectURL(file);
       updateState({ videoSrc: url, videoTitle: file.name, isPlaying: false, stream: null });
+      
+      // Get the stream from the video element after the source is set
+      if (videoRef.current) {
+        const videoStream = videoRef.current.captureStream();
+        updateState({ stream: videoStream });
+      }
+
+      // Add tracks to peer connection if host
+      if (IS_HOST && peerConnection.current && videoRef.current) {
+        const videoStream = videoRef.current.captureStream();
+        videoStream.getTracks().forEach(track => peerConnection.current?.addTrack(track, videoStream));
+      }
     }
   };
   
@@ -234,7 +349,12 @@ export default function VideoPlayer({ movieTitle, partyId }: VideoPlayerProps) {
       // Cannot sync screen share blobs, so this will be local only for now.
       updateState({ stream: screenStream, videoTitle: 'Screen Share', videoSrc: null });
       
-      screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+      // Add tracks to peer connection if host
+      if (IS_HOST && peerConnection.current) {
+        screenStream.getTracks().forEach(track => peerConnection.current?.addTrack(track, screenStream));
+      }
+
+      screenStream.getVideoTracks().forEach(track => track.addEventListener('ended', () => {
         stopCurrentStream();
         updateState({ isPlaying: false, stream: null, videoTitle: movieTitle || 'Movie Title' });
       });
